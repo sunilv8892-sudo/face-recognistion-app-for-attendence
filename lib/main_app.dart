@@ -3,14 +3,14 @@ import 'utils/constants.dart';
 import 'database/database_manager.dart';
 import 'screens/home_screen.dart';
 import 'screens/enrollment_screen.dart';
-import 'screens/attendance_screen.dart';
+import 'screens/attendance_screen_stub.dart';
 import 'screens/database_screen.dart';
 import 'screens/export_screen.dart';
 import 'screens/settings_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // Initialize database
   final dbManager = DatabaseManager();
   await dbManager.database; // Initialize database on app startup
@@ -22,17 +22,13 @@ void main() async {
 class FaceRecognitionApp extends StatefulWidget {
   final DatabaseManager dbManager;
 
-  const FaceRecognitionApp({
-    Key? key,
-    required this.dbManager,
-  }) : super(key: key);
+  const FaceRecognitionApp({super.key, required this.dbManager});
 
   @override
   State<FaceRecognitionApp> createState() => _FaceRecognitionAppState();
 }
 
 class _FaceRecognitionAppState extends State<FaceRecognitionApp> {
-
   @override
   void initState() {
     super.initState();

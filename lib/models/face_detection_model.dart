@@ -1,5 +1,8 @@
+import 'dart:ui';
+
 /// Face detection result from M1 module
 class DetectedFace {
+  final int? id;
   final double x;
   final double y;
   final double width;
@@ -7,6 +10,7 @@ class DetectedFace {
   final double confidence;
 
   DetectedFace({
+    this.id,
     required this.x,
     required this.y,
     required this.width,
@@ -21,15 +25,15 @@ class DetectedFace {
   Offset get center => Offset(x + width / 2, y + height / 2);
 
   /// Validate if face detection is valid
-  bool get isValid => x >= 0 && y >= 0 && width > 0 && height > 0 && confidence > 0 && confidence <= 1.0;
+  bool get isValid =>
+      x >= 0 &&
+      y >= 0 &&
+      width > 0 &&
+      height > 0 &&
+      confidence > 0 &&
+      confidence <= 1.0;
 
   @override
-  String toString() => 'DetectedFace(x: $x, y: $y, w: $width, h: $height, conf: $confidence)';
-}
-
-class Offset {
-  final double dx;
-  final double dy;
-
-  Offset(this.dx, this.dy);
+  String toString() =>
+      'DetectedFace(x: $x, y: $y, w: $width, h: $height, conf: $confidence)';
 }

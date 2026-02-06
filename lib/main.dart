@@ -13,16 +13,16 @@ late DatabaseManager _dbManager;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // Initialize database
   _dbManager = DatabaseManager();
   await _dbManager.database;
-  
+
   runApp(const FaceRecognitionApp());
 }
 
 class FaceRecognitionApp extends StatelessWidget {
-  const FaceRecognitionApp({Key? key}) : super(key: key);
+  const FaceRecognitionApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -33,7 +33,9 @@ class FaceRecognitionApp extends StatelessWidget {
       builder: (context, child) {
         final widget = child ?? const SizedBox.shrink();
         return Container(
-          decoration: const BoxDecoration(gradient: AppConstants.backgroundGradient),
+          decoration: const BoxDecoration(
+            gradient: AppConstants.backgroundGradient,
+          ),
           child: ClipRect(
             child: BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),

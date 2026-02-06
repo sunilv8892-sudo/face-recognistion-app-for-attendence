@@ -11,7 +11,8 @@ class DatabaseScreen extends StatefulWidget {
   State<DatabaseScreen> createState() => _DatabaseScreenState();
 }
 
-class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProviderStateMixin {
+class _DatabaseScreenState extends State<DatabaseScreen>
+    with SingleTickerProviderStateMixin {
   late final TabController _tabController;
   late final DatabaseManager _dbManager;
   late final AttendanceManagementModule _attendanceModule;
@@ -26,6 +27,13 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
     _tabController = TabController(length: 2, vsync: this);
     _dbManager = DatabaseManager();
     _attendanceModule = AttendanceManagementModule(_dbManager);
+    _reloadData();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reload data when screen comes into focus
     _reloadData();
   }
 
@@ -48,9 +56,12 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [_buildOverviewTab(), _buildTodayTab()],
+      body: Container(
+        decoration: const BoxDecoration(gradient: AppConstants.backgroundGradient),
+        child: TabBarView(
+          controller: _tabController,
+          children: [_buildOverviewTab(), _buildTodayTab()],
+        ),
       ),
     );
   }
@@ -61,7 +72,31 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('System statistics', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          // Statistics Header
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppConstants.primaryColor.withAlpha(26),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.bar_chart,
+                  color: AppConstants.primaryColor,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: AppConstants.paddingMedium),
+              const Text(
+                'System Statistics',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: AppConstants.paddingMedium),
           FutureBuilder<SystemStatistics>(
             future: _systemStatsFuture,
@@ -71,13 +106,40 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
               }
               final stats = snapshot.data;
               if (stats == null) {
-                return const Text('Statistics are not available yet.');
+                return Container(
+                  padding: const EdgeInsets.all(AppConstants.paddingLarge),
+                  child: const Text('Statistics are not available yet.'),
+                );
               }
               return _buildStatsCards(stats);
             },
           ),
           const SizedBox(height: AppConstants.paddingLarge),
-          const Text('Students & attendance', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          // Students Header
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppConstants.successColor.withAlpha(26),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.people,
+                  color: AppConstants.successColor,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: AppConstants.paddingMedium),
+              const Text(
+                'Students & Attendance',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: AppConstants.paddingSmall),
           FutureBuilder<List<AttendanceDetails>>(
             future: _studentDetailsFuture,
@@ -87,13 +149,17 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
               }
               final students = snapshot.data ?? [];
               if (students.isEmpty) {
-                return const Text('No students or attendance data is recorded yet.');
+                return Container(
+                  padding: const EdgeInsets.all(AppConstants.paddingLarge),
+                  child: const Text('No students or attendance data is recorded yet.'),
+                );
               }
               return ListView.separated(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 itemCount: students.length,
-                separatorBuilder: (context, index) => const SizedBox(height: AppConstants.paddingSmall),
+                separatorBuilder: (context, index) =>
+                    const SizedBox(height: AppConstants.paddingSmall),
                 itemBuilder: (context, index) => _studentTile(students[index]),
               );
             },
@@ -113,15 +179,52 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
         final entries = snapshot.data ?? [];
         final counts = _countEntriesByStatus(entries);
         final children = <Widget>[
-          const Padding(
-            padding: EdgeInsets.only(bottom: AppConstants.paddingSmall),
-            child: Text('Recorded attendance today', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          Padding(
+            padding: const EdgeInsets.only(
+              bottom: AppConstants.paddingMedium,
+              top: AppConstants.paddingMedium,
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppConstants.accentColor.withAlpha(26),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(
+                    Icons.today,
+                    color: AppConstants.accentColor,
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: AppConstants.paddingMedium),
+                const Text(
+                  "Today's Attendance",
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
           ),
           _buildStatusChips(counts),
           const SizedBox(height: AppConstants.paddingLarge),
         ];
         if (entries.isEmpty) {
-          children.add(const Text('No attendance has been recorded today yet.'));
+          children.add(
+            Container(
+              padding: const EdgeInsets.all(AppConstants.paddingLarge),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(AppConstants.borderRadius),
+                border: Border.all(color: AppConstants.cardBorder),
+              ),
+              child: const Center(
+                child: Text('No attendance has been recorded today yet.'),
+              ),
+            ),
+          );
         } else {
           children.addAll(entries.map(_todayEntryTile));
         }
@@ -135,40 +238,91 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
 
   Widget _buildStatsCards(SystemStatistics stats) {
     final statItems = [
-      _StatData(label: 'Students', value: stats.totalStudents.toString(), color: AppConstants.primaryColor),
-      _StatData(label: 'Embeddings', value: stats.totalEmbeddings.toString(), color: AppConstants.secondaryColor),
-      _StatData(label: 'Records', value: stats.totalAttendanceRecords.toString(), color: AppConstants.successColor),
-      _StatData(label: 'Avg attendance', value: '${stats.averageAttendance.toStringAsFixed(1)}%', color: AppConstants.warningColor),
+      _StatData(
+        label: 'Students',
+        value: stats.totalStudents.toString(),
+        color: AppConstants.primaryColor,
+        icon: Icons.people,
+      ),
+      _StatData(
+        label: 'Embeddings',
+        value: stats.totalEmbeddings.toString(),
+        color: AppConstants.accentColor,
+        icon: Icons.memory,
+      ),
+      _StatData(
+        label: 'Records',
+        value: stats.totalAttendanceRecords.toString(),
+        color: AppConstants.successColor,
+        icon: Icons.check_circle,
+      ),
+      _StatData(
+        label: 'Avg Attendance',
+        value: '${stats.averageAttendance.toStringAsFixed(1)}%',
+        color: AppConstants.warningColor,
+        icon: Icons.trending_up,
+      ),
     ];
     return Wrap(
-      spacing: AppConstants.paddingSmall,
-      runSpacing: AppConstants.paddingSmall,
+      spacing: AppConstants.paddingMedium,
+      runSpacing: AppConstants.paddingMedium,
       children: statItems.map((stat) => _statCard(stat)).toList(),
     );
   }
 
   Widget _statCard(_StatData stat) {
-    return SizedBox(
-      width: 170,
-      child: Card(
-        elevation: 2,
-        child: Padding(
-          padding: const EdgeInsets.all(AppConstants.paddingMedium),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(stat.label, style: const TextStyle(color: Colors.grey, fontSize: 12)),
-              const SizedBox(height: AppConstants.paddingSmall / 2),
-              Text(stat.value, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: stat.color)),
-            ],
-          ),
+    return Container(
+      width: 160,
+      decoration: BoxDecoration(
+        color: AppConstants.cardColor,
+        border: Border.all(color: AppConstants.cardBorder),
+        borderRadius: BorderRadius.circular(AppConstants.borderRadius),
+        boxShadow: [AppConstants.cardShadow],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(AppConstants.paddingMedium),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: stat.color.withAlpha(26),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                stat.icon,
+                color: stat.color,
+                size: 20,
+              ),
+            ),
+            const SizedBox(height: AppConstants.paddingSmall),
+            Text(
+              stat.label,
+              style: const TextStyle(
+                color: AppConstants.textTertiary,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: AppConstants.paddingSmall / 2),
+            Text(
+              stat.value,
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: stat.color,
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
   Widget _studentTile(AttendanceDetails details) {
-    final ratio = details.totalClasses > 0 ? '${details.presentCount}/${details.totalClasses}' : '0/0';
+    final ratio = details.totalClasses > 0
+        ? '${details.presentCount}/${details.totalClasses}'
+        : '0/0';
     return Card(
       child: InkWell(
         onTap: () => _showStudentDetails(details),
@@ -180,20 +334,36 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(details.student.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text(
+                      details.student.name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
                     const SizedBox(height: AppConstants.paddingSmall / 2),
-                    Text('Roll: ${details.student.rollNumber} · Class: ${details.student.className}'),
+                    Text(
+                      'Roll: ${details.student.rollNumber} · Class: ${details.student.className}',
+                    ),
                     const SizedBox(height: AppConstants.paddingSmall / 2),
-                    Text('Present: ${details.presentCount} · Absent: ${details.absentCount} · Late: ${details.lateCount}'),
+                    Text(
+                      'Present: ${details.presentCount} · Absent: ${details.absentCount} · Late: ${details.lateCount}',
+                    ),
                   ],
                 ),
               ),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text(ratio, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  Text(
+                    ratio,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
                   const SizedBox(height: AppConstants.paddingSmall / 2),
-                  Text('${details.attendancePercentage.toStringAsFixed(1)}%', style: const TextStyle(color: Colors.grey)),
+                  Text(
+                    '${details.attendancePercentage.toStringAsFixed(1)}%',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
                   const SizedBox(height: AppConstants.paddingSmall / 2),
                   const Icon(Icons.chevron_right, size: 20),
                 ],
@@ -221,11 +391,16 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
     );
   }
 
-  Future<void> _handleStudentAction(AttendanceDetails details, _StudentAction action) async {
+  Future<void> _handleStudentAction(
+    AttendanceDetails details,
+    _StudentAction action,
+  ) async {
     final student = details.student;
     if (student.id == null) return;
 
-    final title = action == _StudentAction.deleteStudent ? 'Delete student' : 'Clear embeddings';
+    final title = action == _StudentAction.deleteStudent
+        ? 'Delete student'
+        : 'Clear embeddings';
     final description = action == _StudentAction.deleteStudent
         ? 'Delete ${student.name} and all their attendance data?'
         : 'Remove all saved embeddings for ${student.name}? They will need to re-enroll their face.';
@@ -236,8 +411,14 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
         title: Text(title),
         content: Text(description),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Confirm')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Confirm'),
+          ),
         ],
       ),
     );
@@ -252,12 +433,18 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${title} completed for ${student.name}'), backgroundColor: AppConstants.successColor),
+        SnackBar(
+          content: Text('$title completed for ${student.name}'),
+          backgroundColor: AppConstants.successColor,
+        ),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to perform action: $e'), backgroundColor: AppConstants.errorColor),
+        SnackBar(
+          content: Text('Failed to perform action: $e'),
+          backgroundColor: AppConstants.errorColor,
+        ),
       );
     } finally {
       _reloadData();
@@ -267,9 +454,17 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
   Widget _todayEntryTile(DailyAttendanceEntry entry) {
     return Card(
       child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: AppConstants.paddingMedium, vertical: AppConstants.paddingSmall),
-        title: Text(entry.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text('Roll: ${entry.rollNumber} · ${entry.className} · ${entry.formattedDate}'),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: AppConstants.paddingMedium,
+          vertical: AppConstants.paddingSmall,
+        ),
+        title: Text(
+          entry.name,
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Text(
+          'Roll: ${entry.rollNumber} · ${entry.className} · ${entry.formattedDate}',
+        ),
         trailing: Chip(
           label: Text(entry.status.displayName),
           backgroundColor: _statusColor(entry.status),
@@ -285,7 +480,10 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
       children: AttendanceStatus.values.map((status) {
         final count = counts[status] ?? 0;
         return Chip(
-          avatar: CircleAvatar(backgroundColor: Colors.white70, child: Text(count.toString())),
+          avatar: CircleAvatar(
+            backgroundColor: Colors.white70,
+            child: Text(count.toString()),
+          ),
           label: Text(status.displayName),
           backgroundColor: _statusColor(status),
         );
@@ -293,7 +491,9 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
     );
   }
 
-  Map<AttendanceStatus, int> _countEntriesByStatus(List<DailyAttendanceEntry> entries) {
+  Map<AttendanceStatus, int> _countEntriesByStatus(
+    List<DailyAttendanceEntry> entries,
+  ) {
     final counts = <AttendanceStatus, int>{};
     for (final entry in entries) {
       counts[entry.status] = (counts[entry.status] ?? 0) + 1;
@@ -325,19 +525,23 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
 
   Future<List<DailyAttendanceEntry>> _loadTodayEntries() async {
     final now = DateTime.now();
-    final records = await _dbManager.getAttendanceForDate(DateTime(now.year, now.month, now.day));
+    final records = await _dbManager.getAttendanceForDate(
+      DateTime(now.year, now.month, now.day),
+    );
     final entries = <DailyAttendanceEntry>[];
     for (final record in records) {
       final student = await _dbManager.getStudentById(record.studentId);
       if (student == null) continue;
-      entries.add(DailyAttendanceEntry(
-        name: student.name,
-        rollNumber: student.rollNumber,
-        className: student.className,
-        status: record.status,
-        date: record.date,
-        time: record.time ?? '',
-      ));
+      entries.add(
+        DailyAttendanceEntry(
+          name: student.name,
+          rollNumber: student.rollNumber,
+          className: student.className,
+          status: record.status,
+          date: record.date,
+          time: record.time ?? '',
+        ),
+      );
     }
     return entries;
   }
@@ -358,16 +562,25 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
               _dialogRow('Present', details.presentCount.toString()),
               _dialogRow('Absent', details.absentCount.toString()),
               _dialogRow('Late', details.lateCount.toString()),
-              _dialogRow('Attendance %', '${details.attendancePercentage.toStringAsFixed(1)}%'),
+              _dialogRow(
+                'Attendance %',
+                '${details.attendancePercentage.toStringAsFixed(1)}%',
+              ),
               const SizedBox(height: AppConstants.paddingMedium),
-              const Text('Full record', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text(
+                'Full record',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
               const SizedBox(height: AppConstants.paddingSmall),
               ...details.records.map(_recordRow),
             ],
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
         ],
       ),
     );
@@ -375,7 +588,9 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
 
   Widget _dialogRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: AppConstants.paddingSmall / 2),
+      padding: const EdgeInsets.symmetric(
+        vertical: AppConstants.paddingSmall / 2,
+      ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -387,15 +602,23 @@ class _DatabaseScreenState extends State<DatabaseScreen> with SingleTickerProvid
   }
 
   Widget _recordRow(AttendanceRecord record) {
-    final dateLabel = '${record.date.day.toString().padLeft(2, '0')}-${record.date.month.toString().padLeft(2, '0')}-${record.date.year % 100}';
-    final timeLabel = (record.time?.isNotEmpty ?? false) ? ' (${record.time})' : '';
+    final dateLabel =
+        '${record.date.day.toString().padLeft(2, '0')}-${record.date.month.toString().padLeft(2, '0')}-${record.date.year % 100}';
+    final timeLabel = (record.time?.isNotEmpty ?? false)
+        ? ' (${record.time})'
+        : '';
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: AppConstants.paddingSmall / 2),
+      padding: const EdgeInsets.symmetric(
+        vertical: AppConstants.paddingSmall / 2,
+      ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text('$dateLabel$timeLabel'),
-          Chip(label: Text(record.status.displayName), backgroundColor: _statusColor(record.status)),
+          Chip(
+            label: Text(record.status.displayName),
+            backgroundColor: _statusColor(record.status),
+          ),
         ],
       ),
     );
@@ -417,8 +640,14 @@ class _StatData {
   final String label;
   final String value;
   final Color color;
+  final IconData icon;
 
-  _StatData({required this.label, required this.value, required this.color});
+  _StatData({
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.icon,
+  });
 }
 
 class DailyAttendanceEntry {
@@ -447,7 +676,4 @@ class DailyAttendanceEntry {
   }
 }
 
-enum _StudentAction {
-  deleteStudent,
-  clearEmbeddings,
-}
+enum _StudentAction { deleteStudent, clearEmbeddings }

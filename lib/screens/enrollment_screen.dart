@@ -1,18 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'dart:typed_data';
-import 'dart:math' as math;
-import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:permission_handler/permission_handler.dart';
 import '../database/database_manager.dart';
+import '../models/face_detection_model.dart';
 import '../models/student_model.dart';
 import '../models/embedding_model.dart';
-import '../models/face_detection_model.dart';
+import '../modules/m1_face_detection.dart' as face_detection_module;
+import '../modules/m2_face_embedding.dart';
 import '../utils/constants.dart';
 
 class EnrollmentScreen extends StatefulWidget {
-  const EnrollmentScreen({Key? key}) : super(key: key);
+  const EnrollmentScreen({super.key});
 
   @override
   State<EnrollmentScreen> createState() => _EnrollmentScreenState();
@@ -24,24 +24,21 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
   final _classController = TextEditingController();
 
   CameraController? _controller;
-  Interpreter? _faceNetInterpreter;
-  Interpreter? _yoloInterpreter;
+  late face_detection_module.FaceDetectionModule _faceDetector;
+  late FaceEmbeddingModule _faceEmbedder;
+  List<CameraDescription> _availableCameras = [];
+  CameraDescription? _currentCamera;
   late DatabaseManager _dbManager;
 
   int _capturedSamples = 0;
-  List<List<double>> _embeddings = [];
+  final List<List<double>> _embeddings = [];
   bool _isCapturing = false;
-  
-  // YOLO Constants (Aligned with Attendance Screen)
-  static const int _yoloInputSize = 640;
-  static const int _yoloOutputBoxes = 8400;
-  static const int _yoloOutputAttributes = 5; // [x, y, w, h, confidence]
-  static const double _yoloConfidenceThreshold = 0.45;
-  static const double _yoloIouThreshold = 0.45;
+  bool _autoCapturing = false;
+  bool _embedderReady = false;
 
   // Performance tracking
   int _embeddingDim = 0;
-  
+
   @override
   void initState() {
     super.initState();
@@ -51,8 +48,8 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
   @override
   void dispose() {
     _controller?.dispose();
-    _faceNetInterpreter?.close();
-    _yoloInterpreter?.close();
+    _faceEmbedder.dispose();
+    _faceDetector.dispose();
     _nameController.dispose();
     _rollController.dispose();
     _classController.dispose();
@@ -64,24 +61,30 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
       _dbManager = DatabaseManager();
       await _dbManager.database;
 
-      // Load FaceNet
-      _faceNetInterpreter = await Interpreter.fromAsset('assets/models/embedding_model.tflite');
-      final outputShape = _faceNetInterpreter!.getOutputTensor(0).shape;
-      _embeddingDim = outputShape.last;
-      debugPrint('✅ MobileFaceNet loaded for enrollment (${_embeddingDim}D embeddings)');
+      // Initialize modules
+      _faceDetector = face_detection_module.FaceDetectionModule();
+      await _faceDetector.initialize();
 
-      // Load YOLO for face cropping alignment
-      _yoloInterpreter = await Interpreter.fromAsset('assets/models/model.tflite');
-      debugPrint('✅ YOLO loaded for enrollment cropping');
+      _faceEmbedder = FaceEmbeddingModule();
+      await _faceEmbedder.initialize();
+      _embeddingDim = FaceEmbeddingModule.embeddingDimension;
+      _embedderReady = _faceEmbedder.isReady;
+      if (!_embedderReady) {
+        throw Exception('AdaFace-Mobile interpreter failed to initialize');
+      }
+
+      debugPrint(
+        '✅ Face recognition modules initialized (${_embeddingDim}D embeddings)',
+      );
 
       await _initCamera();
       if (mounted) setState(() {});
     } catch (e) {
       debugPrint('Init error: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: $e')));
       }
     }
   }
@@ -94,34 +97,46 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
         debugPrint('❌ Camera permission denied');
         return;
       }
+      _availableCameras = await availableCameras();
+      if (_availableCameras.isEmpty) return;
 
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) return;
+      final preferredCamera = _availableCameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.front,
+        orElse: () => _availableCameras.first,
+      );
+      await _initCameraFor(preferredCamera);
+    } catch (e) {
+      debugPrint('Camera error: $e');
+    }
+  }
 
-      // Find front camera (selfie camera)
-      CameraDescription? frontCamera;
-      for (final camera in cameras) {
-        if (camera.lensDirection == CameraLensDirection.front) {
-          frontCamera = camera;
-          break;
-        }
-      }
-      
-      final selectedCamera = frontCamera ?? cameras.first;
-      debugPrint('📷 Enrollment using camera: ${selectedCamera.name} (${selectedCamera.lensDirection})');
+  Future<void> _initCameraFor(CameraDescription camera) async {
+    try {
+      // Track current camera description for later use
+      // Note: lens direction & sensor orientation not stored to keep state minimal
+      // (overlay mirroring handled in attendance screen via painter parameters)
+      _currentCamera = camera;
 
-      // Use Medium resolution for performance (alignment with attendance)
+      await _controller?.dispose();
       _controller = CameraController(
-        selectedCamera, 
-        ResolutionPreset.medium, 
+        camera,
+        ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
       await _controller!.initialize();
       if (mounted) setState(() {});
     } catch (e) {
-      debugPrint('Camera error: $e');
+      debugPrint('Init camera error: $e');
     }
+  }
+
+  Future<void> _switchCamera() async {
+    if (_availableCameras.length < 2 || _currentCamera == null) return;
+    final currentIndex = _availableCameras.indexOf(_currentCamera!);
+    final nextIndex = (currentIndex + 1) % _availableCameras.length;
+    final nextCamera = _availableCameras[nextIndex];
+    await _initCameraFor(nextCamera);
   }
 
   Future<void> _captureFaceSample() async {
@@ -136,40 +151,59 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
       final rawImage = img.decodeImage(bytes);
 
       if (rawImage != null) {
-        debugPrint('📸 Captured image for enrollment: ${rawImage.width}x${rawImage.height}');
-        
-        // Step 1: Detect face to ensure alignment with attendance screen
-        final detections = await _runYoloOnImage(rawImage);
-        
+        debugPrint(
+          '📸 Captured image for enrollment: ${rawImage.width}x${rawImage.height}',
+        );
+
+        // Step 1: Detect face using ML Kit to ensure alignment with attendance screen
+        final detections = await _detectFaceWithMlKit(bytes);
+
         if (detections.isEmpty) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('❌ No face detected. Please face the camera.')),
+              const SnackBar(
+                content: Text('❌ No face detected. Please face the camera.'),
+              ),
             );
           }
           return;
         }
 
         // Take the largest detected face
-        detections.sort((a, b) => (b.width * b.height).compareTo(a.width * a.height));
+        detections.sort(
+          (a, b) => (b.width * b.height).compareTo(a.width * a.height),
+        );
         final face = detections.first;
-        
+
         // Step 2: Crop face (Identical logic to Attendance screen)
         final croppedFace = _cropFace(rawImage, face);
-        
+
         // Step 3: Generate embedding using MobileFaceNet
         final embedding = await _generateEmbedding(croppedFace);
+        debugPrint('🧠 Generated embedding: ${embedding.length} dimensions');
+        debugPrint('   Values: ${embedding.take(5).toList()}...');
 
         if (embedding.isNotEmpty) {
           _embeddings.add(embedding);
-          
+          debugPrint('✅ Added embedding #${_embeddings.length} to list');
+
           if (mounted) {
             setState(() => _capturedSamples++);
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('✅ Sample ${_capturedSamples} captured'),
+                content: Text('✅ Sample $_capturedSamples captured (${embedding.length}D)'),
                 duration: const Duration(milliseconds: 500),
-                backgroundColor: AppConstants.goldButtonColor,
+                backgroundColor: AppConstants.primaryColor,
+              ),
+            );
+          }
+        } else {
+          debugPrint('❌ Embedding is empty!');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('❌ Failed to generate embedding'),
+                backgroundColor: Colors.red,
               ),
             );
           }
@@ -182,157 +216,83 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
     }
   }
 
-  Future<List<DetectedFace>> _runYoloOnImage(img.Image image) async {
-    if (_yoloInterpreter == null) return [];
+  Future<void> _startAutoCapture() async {
+    if (_autoCapturing) return;
+    _autoCapturing = true;
+    if (mounted) setState(() {});
 
     try {
-      // Resize to 640x640 for YOLO
-      final resized = img.copyResize(image, width: _yoloInputSize, height: _yoloInputSize);
-      
-      final input = Float32List(1 * _yoloInputSize * _yoloInputSize * 3);
-      int index = 0;
-      for (int y = 0; y < _yoloInputSize; y++) {
-        for (int x = 0; x < _yoloInputSize; x++) {
-          final pixel = resized.getPixel(x, y);
-          input[index++] = pixel.r.toDouble() / 255.0;
-          input[index++] = pixel.g.toDouble() / 255.0;
-          input[index++] = pixel.b.toDouble() / 255.0;
+      while (_autoCapturing &&
+          _capturedSamples < AppConstants.requiredEnrollmentSamples) {
+        // If a capture is already in progress, wait a short while
+        if (_isCapturing) {
+          await Future.delayed(const Duration(milliseconds: 300));
+          continue;
         }
-      }
 
-      final inputTensor = input.reshape([1, _yoloInputSize, _yoloInputSize, 3]);
-      final output = List.filled(1 * _yoloOutputAttributes * _yoloOutputBoxes, 0.0)
-          .reshape([1, _yoloOutputAttributes, _yoloOutputBoxes]);
-      
-      _yoloInterpreter!.run(inputTensor, output);
-      
-      return _parseYoloOutput(output, image.width, image.height);
+        await _captureFaceSample();
+
+        // Small delay between captures to allow user/head movement
+        await Future.delayed(const Duration(milliseconds: 600));
+      }
+    } finally {
+      _autoCapturing = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _stopAutoCapture() {
+    _autoCapturing = false;
+    if (mounted) setState(() {});
+  }
+
+  Future<List<DetectedFace>> _detectFaceWithMlKit(Uint8List imageBytes) async {
+    try {
+      final faces = await _faceDetector.detectFaces(imageBytes);
+
+      // Convert to legacy DetectedFace format for compatibility
+      return faces
+          .map(
+            (face) => DetectedFace(
+              x: face.boundingBox.left.toDouble(),
+              y: face.boundingBox.top.toDouble(),
+              width: face.boundingBox.width.toDouble(),
+              height: face.boundingBox.height.toDouble(),
+              confidence: 1.0,
+            ),
+          )
+          .toList();
     } catch (e) {
-      debugPrint('YOLO inference error: $e');
+      debugPrint('Face detection error: $e');
       return [];
     }
   }
 
-  List<DetectedFace> _parseYoloOutput(List output, int imageWidth, int imageHeight) {
-    List<DetectedFace> detections = [];
-    final batch = output[0] as List<dynamic>;
-    
-    final attrLists = List<List<dynamic>>.generate(
-      _yoloOutputAttributes,
-      (index) => batch[index] as List<dynamic>
-    );
-
-    for (int i = 0; i < _yoloOutputBoxes; i++) {
-        final double confidence = _toDouble(attrLists[4][i]);
-        if (confidence < _yoloConfidenceThreshold) continue;
-
-        final double cx = _toDouble(attrLists[0][i]);
-        final double cy = _toDouble(attrLists[1][i]);
-        final double w = _toDouble(attrLists[2][i]);
-        final double h = _toDouble(attrLists[3][i]);
-
-        double x = (cx * imageWidth) - (w * imageWidth / 2.0);
-        double y = (cy * imageHeight) - (h * imageHeight / 2.0);
-        double pixelW = w * imageWidth;
-        double pixelH = h * imageHeight;
-
-        detections.add(DetectedFace(
-          x: x,
-          y: y,
-          width: pixelW,
-          height: pixelH,
-          confidence: confidence,
-        ));
-    }
-
-    return _applyNonMaxSuppression(detections, _yoloIouThreshold);
-  }
-
-  List<DetectedFace> _applyNonMaxSuppression(List<DetectedFace> candidates, double iouThreshold) {
-    final sorted = List<DetectedFace>.from(candidates)
-      ..sort((a, b) => b.confidence.compareTo(a.confidence));
-    final List<DetectedFace> selected = [];
-
-    for (final candidate in sorted) {
-      bool shouldKeep = true;
-      for (final existing in selected) {
-        if (_intersectionOverUnion(existing, candidate) > iouThreshold) {
-          shouldKeep = false;
-          break;
-        }
-      }
-      if (shouldKeep) selected.add(candidate);
-    }
-    return selected;
-  }
-
-  double _intersectionOverUnion(DetectedFace a, DetectedFace b) {
-    final double left = math.max(a.x, b.x);
-    final double top = math.max(a.y, b.y);
-    final double right = math.min(a.x + a.width, b.x + b.width);
-    final double bottom = math.min(a.y + a.height, b.y + b.height);
-
-    final double intersectW = math.max(0.0, right - left);
-    final double intersectH = math.max(0.0, bottom - top);
-    final double intersection = intersectW * intersectH;
-    final double union = (a.width * a.height) + (b.width * b.height) - intersection;
-    if (union <= 0.0) return 0.0;
-    return intersection / union;
-  }
-
+  // Enrollment uses ML Kit for detection; NMS not required
   img.Image _cropFace(img.Image fullImage, DetectedFace face) {
     final x = face.x.toInt().clamp(0, fullImage.width - 1);
     final y = face.y.toInt().clamp(0, fullImage.height - 1);
-    final width = face.width.toInt().clamp(1, fullImage.width - x);
-    final height = face.height.toInt().clamp(1, fullImage.height - y);
-    return img.copyCrop(fullImage, x: x, y: y, width: width, height: height);
-  }
-
-  double _toDouble(dynamic value) {
-    if (value is double) return value;
-    if (value is num) return value.toDouble();
-    return 0.0;
+    final w = face.width.toInt().clamp(1, fullImage.width - x);
+    final h = face.height.toInt().clamp(1, fullImage.height - y);
+    debugPrint('Cropping face at ($x, $y) with size ($w x $h) from ${fullImage.width}x${fullImage.height}');
+    return img.copyCrop(fullImage, x: x, y: y, width: w, height: h);
   }
 
   Future<List<double>> _generateEmbedding(img.Image faceImage) async {
-    if (_faceNetInterpreter == null) return [];
-
     try {
-      // Aligned with attendance screen: 112x112 resize
-      final toProcess = (faceImage.width == 112 && faceImage.height == 112) 
-          ? faceImage 
-          : img.copyResize(faceImage, width: 112, height: 112, interpolation: img.Interpolation.linear);
-
-      final input = Float32List(1 * 112 * 112 * 3);
-      int index = 0;
-      for (int y = 0; y < 112; y++) {
-        for (int x = 0; x < 112; x++) {
-          final pixel = toProcess.getPixel(x, y);
-          // Normalization [-1, 1]
-          input[index++] = ((pixel.r.toInt() / 255.0) - 0.5) * 2.0;
-          input[index++] = ((pixel.g.toInt() / 255.0) - 0.5) * 2.0;
-          input[index++] = ((pixel.b.toInt() / 255.0) - 0.5) * 2.0;
-        }
+      debugPrint('🔄 Generating embedding from face ${faceImage.width}x${faceImage.height}');
+      // Convert to bytes for the embedding module
+      final faceBytes = Uint8List.fromList(img.encodeJpg(faceImage));
+      debugPrint('   Encoded to ${faceBytes.length} bytes');
+      final embedding = await _faceEmbedder.generateEmbedding(faceBytes);
+      if (embedding == null) {
+        debugPrint('❌ Embedding generation returned null');
+        return [];
       }
-
-      final inputTensor = input.reshape([1, 112, 112, 3]);
-      final output = Float32List(_embeddingDim).reshape([1, _embeddingDim]);
-      
-      _faceNetInterpreter!.run(inputTensor, output);
-
-      // L2 Normalization
-      final embedding = <double>[];
-      double norm = 0.0;
-      for (int i = 0; i < _embeddingDim; i++) {
-        final val = output[0][i] as double;
-        embedding.add(val);
-        norm += val * val;
-      }
-      
-      norm = math.sqrt(norm) > 0 ? math.sqrt(norm) : 1.0;
-      return embedding.map((v) => v / norm).toList();
+      debugPrint('✅ Embedding generated: ${embedding.length}D vector');
+      return embedding;
     } catch (e) {
-      debugPrint('Embedding error: $e');
+      debugPrint('❌ Embedding generation error: $e');
       return [];
     }
   }
@@ -341,9 +301,9 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
     if (_nameController.text.isEmpty ||
         _rollController.text.isEmpty ||
         _classController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill all fields')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Please fill all fields')));
       return;
     }
 
@@ -359,6 +319,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
     }
 
     try {
+      debugPrint('💾 Saving student with ${_embeddings.length} embeddings');
       // Insert student
       final student = Student(
         name: _nameController.text,
@@ -366,11 +327,14 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
         className: _classController.text,
         enrollmentDate: DateTime.now(),
       );
+      debugPrint('   Name: ${student.name}, Roll: ${student.rollNumber}, Class: ${student.className}');
 
       final studentId = await _dbManager.insertStudent(student);
+      debugPrint('   ✅ Student inserted with ID: $studentId');
 
       // Insert embeddings
-      for (final embedding in _embeddings) {
+      for (var i = 0; i < _embeddings.length; i++) {
+        final embedding = _embeddings[i];
         await _dbManager.insertEmbedding(
           FaceEmbedding(
             studentId: studentId,
@@ -378,6 +342,30 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
             captureDate: DateTime.now(),
           ),
         );
+        debugPrint('   ✅ Embedding $i inserted (${embedding.length}D)');
+      }
+      debugPrint('✅ Student enrolled successfully!');
+      
+      // Verify data was actually saved
+      final savedStudent = await _dbManager.getStudentById(studentId);
+      if (savedStudent != null) {
+        debugPrint('🔍 VERIFICATION: Student found in database!');
+        debugPrint('   ID: ${savedStudent.id}');
+        debugPrint('   Name: ${savedStudent.name}');
+        debugPrint('   Roll: ${savedStudent.rollNumber}');
+        debugPrint('   Class: ${savedStudent.className}');
+        
+        // Verify embeddings were saved
+        final savedEmbeddings = await _dbManager.getEmbeddingsForStudent(studentId);
+        debugPrint('   Embeddings saved: ${savedEmbeddings.length}');
+        for (var i = 0; i < savedEmbeddings.length; i++) {
+          debugPrint('      Embedding $i: ${savedEmbeddings[i].vector.length}D');
+        }
+        
+        final allStudents = await _dbManager.getAllStudents();
+        debugPrint('   Total students in DB: ${allStudents.length}');
+      } else {
+        debugPrint('❌ VERIFICATION FAILED: Student NOT found after insert!');
       }
 
       if (mounted) {
@@ -393,16 +381,16 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
         });
         Navigator.pop(context);
       }
-    } on Exception catch (e) {
-      debugPrint('Save error: $e');
+    } catch (e) {
+      debugPrint('❌ Save error: $e');
       if (mounted) {
         String errorMsg = 'Error: $e';
         if (e.toString().contains('UNIQUE')) {
           errorMsg = 'Roll number already exists!';
         }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(errorMsg)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(errorMsg)));
       }
     }
   }
@@ -410,124 +398,361 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
   @override
   Widget build(BuildContext context) {
     final isReady = _controller != null && _controller!.value.isInitialized;
+    final canCapture = isReady && _embedderReady;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Enroll Student'),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(AppConstants.paddingMedium),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(AppConstants.paddingMedium),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Student Information',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: AppConstants.paddingMedium),
-                    TextField(
-                      controller: _nameController,
-                      decoration: const InputDecoration(
-                        labelText: 'Full Name',
-                        hintText: 'Enter student name',
-                        prefixIcon: Icon(Icons.person),
+      appBar: AppBar(title: const Text('Enroll Student')),
+      body: Container(
+        decoration: const BoxDecoration(gradient: AppConstants.backgroundGradient),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(AppConstants.paddingMedium),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Student Information Card
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppConstants.paddingLarge),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: AppConstants.primaryColor.withAlpha(26),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(
+                              Icons.person_add,
+                              color: AppConstants.primaryColor,
+                              size: 24,
+                            ),
+                          ),
+                          const SizedBox(width: AppConstants.paddingMedium),
+                          const Text(
+                            'Student Information',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: AppConstants.paddingMedium),
-                    TextField(
-                      controller: _rollController,
-                      decoration: const InputDecoration(
-                        labelText: 'Roll Number',
-                        hintText: 'e.g., 21CS01',
-                        prefixIcon: Icon(Icons.numbers),
+                      const SizedBox(height: AppConstants.paddingLarge),
+                      TextField(
+                        controller: _nameController,
+                        decoration: InputDecoration(
+                          labelText: 'Full Name',
+                          hintText: 'Enter student name',
+                          prefixIcon: const Icon(Icons.person_outline),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(
+                              AppConstants.borderRadius,
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: AppConstants.paddingMedium),
-                    TextField(
-                      controller: _classController,
-                      decoration: const InputDecoration(
-                        labelText: 'Class',
-                        hintText: 'e.g., CSE-A',
-                        prefixIcon: Icon(Icons.class_),
+                      const SizedBox(height: AppConstants.paddingMedium),
+                      TextField(
+                        controller: _rollController,
+                        decoration: InputDecoration(
+                          labelText: 'Roll Number',
+                          hintText: 'e.g., 21CS01',
+                          prefixIcon: const Icon(Icons.numbers),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(
+                              AppConstants.borderRadius,
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: AppConstants.paddingMedium),
+                      TextField(
+                        controller: _classController,
+                        decoration: InputDecoration(
+                          labelText: 'Class/Section',
+                          hintText: 'e.g., CSE-A',
+                          prefixIcon: const Icon(Icons.school),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(
+                              AppConstants.borderRadius,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: AppConstants.paddingLarge),
-            Card(
-              color: Colors.grey[200],
-              child: !isReady
-                  ? const SizedBox(
-                      height: 300,
-                      child: Center(child: CircularProgressIndicator()),
-                    )
-                  : SizedBox(
-                      height: 300,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(AppConstants.borderRadius),
-                        child: CameraPreview(_controller!),
+
+              const SizedBox(height: AppConstants.paddingLarge),
+
+              // Camera Preview Section
+              Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(AppConstants.borderRadiusLarge),
+                  border: Border.all(color: AppConstants.cardBorder, width: 2),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(AppConstants.borderRadiusLarge),
+                  child: Container(
+                    color: AppConstants.secondaryColor,
+                    height: 400,
+                    width: double.infinity,
+                    child: !isReady
+                        ? const Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                CircularProgressIndicator(),
+                                SizedBox(height: AppConstants.paddingMedium),
+                                Text(
+                                  'Initializing Camera...',
+                                  style: TextStyle(
+                                    color: AppConstants.textSecondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        : Stack(
+                            children: [
+                              CameraPreview(_controller!),
+                              // Camera Switch Button
+                              if (_availableCameras.length > 1)
+                                Positioned(
+                                  right: 12,
+                                  top: 12,
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withAlpha(153),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: IconButton(
+                                      onPressed: _switchCamera,
+                                      icon: const Icon(
+                                        Icons.cameraswitch,
+                                        color: Colors.white,
+                                        size: 24,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              // Status Indicator
+                              Positioned(
+                                bottom: 12,
+                                left: 12,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withAlpha(153),
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Container(
+                                        width: 8,
+                                        height: 8,
+                                        decoration: const BoxDecoration(
+                                          color: AppConstants.successColor,
+                                          shape: BoxShape.circle,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      const Text(
+                                        'Camera Ready',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: AppConstants.paddingLarge),
+
+              // Progress Section
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppConstants.paddingLarge),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Enrollment Progress',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppConstants.primaryColor.withAlpha(26),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '$_capturedSamples/${AppConstants.requiredEnrollmentSamples}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: AppConstants.primaryColor,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: AppConstants.paddingMedium),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: LinearProgressIndicator(
+                          value: _capturedSamples /
+                              AppConstants.requiredEnrollmentSamples,
+                          minHeight: 10,
+                          backgroundColor: AppConstants.inputFill,
+                          valueColor: AlwaysStoppedAnimation(
+                            _capturedSamples >=
+                                    AppConstants.requiredEnrollmentSamples
+                                ? AppConstants.successColor
+                                : AppConstants.primaryColor,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: AppConstants.paddingSmall),
+                      if (_capturedSamples <
+                          AppConstants.requiredEnrollmentSamples)
+                        Text(
+                          'Capture ${AppConstants.requiredEnrollmentSamples - _capturedSamples} more samples',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppConstants.textTertiary,
+                          ),
+                        )
+                      else
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.check_circle,
+                              color: AppConstants.successColor,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Ready to save!',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppConstants.successColor,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+
+              if (!_embedderReady)
+                Padding(
+                  padding: const EdgeInsets.only(
+                    top: AppConstants.paddingMedium,
+                  ),
+                  child: Container(
+                    padding: const EdgeInsets.all(AppConstants.paddingMedium),
+                    decoration: BoxDecoration(
+                      color: AppConstants.errorColor.withAlpha(26),
+                      borderRadius: BorderRadius.circular(AppConstants.borderRadius),
+                      border: Border.all(
+                        color: AppConstants.errorColor.withAlpha(77),
                       ),
                     ),
-            ),
-            const SizedBox(height: AppConstants.paddingMedium),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(AppConstants.paddingMedium),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    child: Row(
                       children: [
-                        const Text('Samples Captured'),
-                        Text(
-                          '$_capturedSamples / ${AppConstants.requiredEnrollmentSamples}',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: AppConstants.primaryColor,
+                        const Icon(
+                          Icons.warning,
+                          color: AppConstants.errorColor,
+                          size: 20,
+                        ),
+                        const SizedBox(width: AppConstants.paddingSmall),
+                        Expanded(
+                          child: Text(
+                            'Face embedding model unavailable. Check logs.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: AppConstants.errorLight,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: AppConstants.paddingSmall),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: LinearProgressIndicator(
-                        value: _capturedSamples / AppConstants.requiredEnrollmentSamples,
-                        minHeight: 8,
-                      ),
-                    ),
-                  ],
+                  ),
+                ),
+
+              const SizedBox(height: AppConstants.paddingLarge),
+
+              // Action Buttons
+              ElevatedButton.icon(
+                onPressed: canCapture && !_autoCapturing
+                    ? () => _startAutoCapture()
+                    : (_autoCapturing ? () => _stopAutoCapture() : null),
+                icon: Icon(_autoCapturing ? Icons.stop_circle : Icons.videocam),
+                label: Text(
+                  _autoCapturing ? 'Stop Capture' : 'Start Auto Capture',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
               ),
-            ),
-            const SizedBox(height: AppConstants.paddingLarge),
-            ElevatedButton.icon(
-              onPressed: isReady && !_isCapturing ? _captureFaceSample : null,
-              icon: const Icon(Icons.camera),
-              label: const Text('Capture Face Sample'),
-            ),
-            const SizedBox(height: AppConstants.paddingMedium),
-            ElevatedButton(
-              onPressed: _capturedSamples >= AppConstants.requiredEnrollmentSamples
-                  ? _saveStudent
-                  : null,
-              child: const Text('Save Student'),
-            ),
-            const SizedBox(height: AppConstants.paddingMedium),
-            OutlinedButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-          ],
+
+              const SizedBox(height: AppConstants.paddingSmall),
+
+              ElevatedButton.icon(
+                onPressed:
+                    _capturedSamples >=
+                            AppConstants.requiredEnrollmentSamples &&
+                        _embedderReady
+                        ? _saveStudent
+                        : null,
+                icon: const Icon(Icons.check_circle),
+                label: const Text(
+                  'Save Student',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
+
+              const SizedBox(height: AppConstants.paddingSmall),
+
+              OutlinedButton.icon(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.arrow_back),
+                label: const Text(
+                  'Cancel',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
+
+              const SizedBox(height: AppConstants.paddingLarge),
+            ],
+          ),
         ),
       ),
     );

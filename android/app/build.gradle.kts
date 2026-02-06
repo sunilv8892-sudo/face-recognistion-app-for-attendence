@@ -24,7 +24,7 @@ android {
         applicationId = "com.example.yolo_app.yolo_app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = flutter.minSdkVersion  // CameraX requires minimum API 21
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -44,6 +44,18 @@ android {
     }
 }
 
+dependencies {
+    // CameraX dependencies
+    implementation("androidx.camera:camera-core:1.3.1")
+    implementation("androidx.camera:camera-camera2:1.3.1")
+    implementation("androidx.camera:camera-lifecycle:1.3.1")
+    implementation("androidx.camera:camera-view:1.3.1")
+    implementation("androidx.camera:camera-extensions:1.3.1")
+
+    // MediaPipe dependencies
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
+}
+
 flutter {
     source = "../.."
 }
@@ -55,7 +67,4 @@ configurations.all {
         force("com.google.ai.edge.litert:litert-api:1.4.0")
         force("com.google.ai.edge.litert:litert-gpu:1.4.0")
     }
-    exclude(group = "org.tensorflow", module = "tensorflow-lite")
-    exclude(group = "org.tensorflow", module = "tensorflow-lite-api")
-    exclude(group = "org.tensorflow", module = "tensorflow-lite-gpu")
 }

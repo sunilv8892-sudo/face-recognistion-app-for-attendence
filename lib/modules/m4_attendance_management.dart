@@ -53,7 +53,9 @@ class AttendanceManagementModule {
   }
 
   /// Get attendance for all students on a date
-  Future<List<Map<String, dynamic>>> getDailyAttendanceReport(DateTime date) async {
+  Future<List<Map<String, dynamic>>> getDailyAttendanceReport(
+    DateTime date,
+  ) async {
     final records = await dbManager.getAttendanceForDate(date);
     final report = <Map<String, dynamic>>[];
 
@@ -72,17 +74,17 @@ class AttendanceManagementModule {
   }
 
   /// Get monthly report
-  Future<List<Map<String, dynamic>>> getMonthlyReport(int month, int year) async {
+  Future<List<Map<String, dynamic>>> getMonthlyReport(
+    int month,
+    int year,
+  ) async {
     final allStudents = await dbManager.getAllStudents();
     final report = <Map<String, dynamic>>[];
 
     for (final student in allStudents) {
       final details = await getAttendanceDetails(student.id!);
       if (details != null) {
-        report.add({
-          'student': student,
-          'attendance': details,
-        });
+        report.add({'student': student, 'attendance': details});
       }
     }
 
@@ -93,9 +95,10 @@ class AttendanceManagementModule {
   Future<String> exportAsCSV() async {
     final allStudents = await dbManager.getAllStudents();
     final buffer = StringBuffer();
-
-    // Header
-    buffer.writeln('Name,Roll Number,Class,Total Classes,Present,Absent,Late,Attendance %');
+    // Header - Attendance summary
+    buffer.writeln(
+      'Name,Roll Number,Class,Total Classes,Present,Absent,Late,Attendance %',
+    );
 
     for (final student in allStudents) {
       final details = await getAttendanceDetails(student.id!);
@@ -108,6 +111,58 @@ class AttendanceManagementModule {
       }
     }
 
+    return buffer.toString();
+  }
+
+  /// Export embeddings only as CSV
+  Future<String> exportEmbeddingsCSV() async {
+    final buffer = StringBuffer();
+    buffer.writeln('id,student_id,capture_date,dimension,vector');
+    final embeddings = await dbManager.getAllEmbeddings();
+    for (final emb in embeddings) {
+      final vecStr = emb.vector.map((v) => v.toStringAsFixed(6)).join(';');
+      buffer.writeln(
+        '${emb.id ?? ''},${emb.studentId},${emb.captureDate.toIso8601String()},${emb.dimension},"$vecStr"',
+      );
+    }
+    return buffer.toString();
+  }
+
+  /// Export detailed attendance records (all dates)
+  Future<String> exportAttendanceDetailsCSV() async {
+    final buffer = StringBuffer();
+    buffer.writeln('Date,Student Name,Roll Number,Class,Status,Time');
+    
+    final students = await dbManager.getAllStudents();
+    final allRecords = await dbManager.getAllAttendance();
+    
+    // Group by date
+    final recordsByDate = <DateTime, List<dynamic>>{};
+    for (final record in allRecords) {
+      final dateKey = DateTime(record.date.year, record.date.month, record.date.day);
+      if (!recordsByDate.containsKey(dateKey)) {
+        recordsByDate[dateKey] = [];
+      }
+      recordsByDate[dateKey]!.add(record);
+    }
+    
+    // Sort by date
+    final sortedDates = recordsByDate.keys.toList()..sort();
+    
+    for (final date in sortedDates) {
+      for (final record in recordsByDate[date]!) {
+        final student = students.firstWhere(
+          (s) => s.id == record.studentId,
+          orElse: () => students.first,
+        );
+        buffer.writeln(
+          '${date.toIso8601String().split('T')[0]},'
+          '${student.name},${student.rollNumber},${student.className},'
+          '${record.status},${record.time ?? 'N/A'}',
+        );
+      }
+    }
+    
     return buffer.toString();
   }
 

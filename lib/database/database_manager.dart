@@ -1,261 +1,327 @@
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
-import '../models/student_model.dart';
-import '../models/embedding_model.dart';
-import '../models/attendance_model.dart';
+import 'package:drift/drift.dart';
+import 'dart:convert';
+import 'face_recognition_database.dart';
+import '../models/student_model.dart' as model;
+import '../models/embedding_model.dart' as model;
+import '../models/attendance_model.dart' as model;
 
-/// Database manager for offline local storage
-/// Handles Students, Face Embeddings, and Attendance records
+/// Database manager using Drift for SQLite with vector extension support
 class DatabaseManager {
-  static const String dbName = 'attendance.db';
-  static const int dbVersion = 1;
+  static final DatabaseManager _instance = DatabaseManager._internal();
+  FaceRecognitionDatabase? _database;
 
-  // Table names
-  static const String studentsTable = 'students';
-  static const String embeddingsTable = 'embeddings';
-  static const String attendanceTable = 'attendance';
+  factory DatabaseManager() {
+    return _instance;
+  }
 
-  Database? _database;
+  DatabaseManager._internal();
 
-  /// Get or initialize database
-  Future<Database> get database async {
-    _database ??= await _initializeDatabase();
+  /// Get database instance
+  Future<FaceRecognitionDatabase> get database async {
+    _database ??= FaceRecognitionDatabase();
     return _database!;
   }
 
-  /// Initialize database and create tables
-  Future<Database> _initializeDatabase() async {
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, dbName);
-    return await openDatabase(
-      path,
-      version: dbVersion,
-      onCreate: _createTables,
-    );
+  /// Initialize database (called automatically by Drift)
+  Future<void> initialize() async {
+    await database;
   }
 
-  /// Create all necessary tables
-  Future<void> _createTables(Database db, int version) async {
-    // Students table
-    await db.execute('''
-      CREATE TABLE $studentsTable (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        roll_number TEXT UNIQUE NOT NULL,
-        class TEXT NOT NULL,
-        enrollment_date TEXT NOT NULL
-      )
-    ''');
-
-    // Face Embeddings table (multiple embeddings per student)
-    await db.execute('''
-      CREATE TABLE $embeddingsTable (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        vector TEXT NOT NULL,
-        capture_date TEXT NOT NULL,
-        FOREIGN KEY(student_id) REFERENCES $studentsTable(id) ON DELETE CASCADE
-      )
-    ''');
-
-    // Attendance table
-    await db.execute('''
-      CREATE TABLE $attendanceTable (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        date TEXT NOT NULL,
-        time TEXT,
-        status TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        FOREIGN KEY(student_id) REFERENCES $studentsTable(id) ON DELETE CASCADE,
-        UNIQUE(student_id, date)
-      )
-    ''');
-
-    // Create indexes for faster queries
-    await db.execute('CREATE INDEX idx_student_id ON $embeddingsTable(student_id)');
-    await db.execute('CREATE INDEX idx_attendance_date ON $attendanceTable(date)');
+  /// Close database
+  Future<void> close() async {
+    await _database?.close();
+    _database = null;
   }
 
   // ==================== STUDENT OPERATIONS ====================
 
   /// Insert a new student
-  Future<int> insertStudent(Student student) async {
+  Future<int> insertStudent(model.Student student) async {
     final db = await database;
-    return await db.insert(
-      studentsTable,
-      student.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
+    return await db.insertStudent(
+      StudentsCompanion(
+        name: Value(student.name),
+        rollNumber: Value(student.rollNumber),
+        studentClass: Value(student.className),
+        enrollmentDate: Value(student.enrollmentDate),
+      ),
     );
   }
 
   /// Get all students
-  Future<List<Student>> getAllStudents() async {
+  Future<List<model.Student>> getAllStudents() async {
     final db = await database;
-    final maps = await db.query(studentsTable, orderBy: 'name ASC');
-    return List.generate(maps.length, (i) => Student.fromMap(maps[i]));
+    final students = await db.getAllStudents();
+    return students
+        .map(
+          (s) => model.Student(
+            id: s.id,
+            name: s.name,
+            rollNumber: s.rollNumber,
+            className: s.studentClass,
+            enrollmentDate: s.enrollmentDate,
+          ),
+        )
+        .toList();
   }
 
   /// Get student by ID
-  Future<Student?> getStudentById(int id) async {
+  Future<model.Student?> getStudentById(int id) async {
     final db = await database;
-    final maps = await db.query(
-      studentsTable,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    return maps.isNotEmpty ? Student.fromMap(maps[0]) : null;
-  }
-
-  /// Get student by roll number
-  Future<Student?> getStudentByRollNumber(String rollNumber) async {
-    final db = await database;
-    final maps = await db.query(
-      studentsTable,
-      where: 'roll_number = ?',
-      whereArgs: [rollNumber],
-    );
-    return maps.isNotEmpty ? Student.fromMap(maps[0]) : null;
+    final student = await db.getStudentById(id);
+    return student != null
+        ? model.Student(
+            id: student.id,
+            name: student.name,
+            rollNumber: student.rollNumber,
+            className: student.studentClass,
+            enrollmentDate: student.enrollmentDate,
+          )
+        : null;
   }
 
   /// Update student
-  Future<int> updateStudent(Student student) async {
+  Future<int> updateStudent(int id, model.Student student) async {
     final db = await database;
-    return await db.update(
-      studentsTable,
-      student.toMap(),
-      where: 'id = ?',
-      whereArgs: [student.id],
+    return await db.updateStudent(
+      id,
+      StudentsCompanion(
+        name: Value(student.name),
+        rollNumber: Value(student.rollNumber),
+        studentClass: Value(student.className),
+        enrollmentDate: Value(student.enrollmentDate),
+      ),
     );
   }
 
   /// Delete student
   Future<int> deleteStudent(int id) async {
     final db = await database;
-    return await db.delete(
-      studentsTable,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return await db.deleteStudent(id);
   }
 
-  // ==================== EMBEDDING OPERATIONS ====================
+  // ==================== FACE EMBEDDING OPERATIONS ====================
 
   /// Insert face embedding
-  Future<int> insertEmbedding(FaceEmbedding embedding) async {
+  Future<int> insertEmbedding(model.FaceEmbedding embedding) async {
     final db = await database;
-    return await db.insert(embeddingsTable, embedding.toMap());
+    // Convert List<double> to JSON string for storage
+    final vectorJson = jsonEncode(embedding.vector);
+    return await db.insertEmbedding(
+      FaceEmbeddingsCompanion(
+        studentId: Value(embedding.studentId),
+        vector: Value(vectorJson),
+        captureDate: Value(embedding.captureDate),
+      ),
+    );
   }
 
   /// Get embeddings for a student
-  Future<List<FaceEmbedding>> getEmbeddingsForStudent(int studentId) async {
+  Future<List<model.FaceEmbedding>> getEmbeddingsForStudent(
+    int studentId,
+  ) async {
     final db = await database;
-    final maps = await db.query(
-      embeddingsTable,
-      where: 'student_id = ?',
-      whereArgs: [studentId],
-      orderBy: 'capture_date DESC',
-    );
-    return List.generate(maps.length, (i) => FaceEmbedding.fromMap(maps[i]));
+    final embeddings = await db.getEmbeddingsForStudent(studentId);
+    return embeddings
+        .map(
+          (e) => model.FaceEmbedding(
+            id: e.id,
+            studentId: e.studentId,
+            vector: _parseVector(e.vector),
+            captureDate: e.captureDate,
+          ),
+        )
+        .toList();
   }
 
-  /// Get all embeddings (for matching)
-  Future<List<FaceEmbedding>> getAllEmbeddings() async {
+  /// Get all embeddings
+  Future<List<model.FaceEmbedding>> getAllEmbeddings() async {
     final db = await database;
-    final maps = await db.query(embeddingsTable);
-    return List.generate(maps.length, (i) => FaceEmbedding.fromMap(maps[i]));
+    final embeddings = await db.getAllEmbeddings();
+    return embeddings
+        .map(
+          (e) => model.FaceEmbedding(
+            id: e.id,
+            studentId: e.studentId,
+            vector: _parseVector(e.vector),
+            captureDate: e.captureDate,
+          ),
+        )
+        .toList();
   }
 
-  /// Delete embeddings for a student
-  Future<int> deleteEmbeddingsForStudent(int studentId) async {
+  // Helper method to parse JSON vector strings
+  List<double> _parseVector(String vectorStr) {
+    try {
+      final decoded = jsonDecode(vectorStr);
+      if (decoded is List) {
+        return List<double>.from(decoded.map((v) => (v as num).toDouble()));
+      }
+      return [];
+    } catch (e) {
+      print('⚠️ Error parsing vector: $e');
+      print('   Vector string: $vectorStr');
+      return [];
+    }
+  }
+
+  /// Find similar embeddings using vector similarity
+  Future<List<model.FaceEmbedding>> findSimilarEmbeddings(
+    List<double> queryVector,
+    double threshold,
+  ) async {
     final db = await database;
-    return await db.delete(
-      embeddingsTable,
-      where: 'student_id = ?',
-      whereArgs: [studentId],
-    );
+    final embeddings = await db.findSimilarEmbeddings(queryVector, threshold);
+    return embeddings
+        .map(
+          (e) => model.FaceEmbedding(
+            id: e.id,
+            studentId: e.studentId,
+            vector: _parseVector(e.vector),
+            captureDate: e.captureDate,
+          ),
+        )
+        .toList();
   }
 
   // ==================== ATTENDANCE OPERATIONS ====================
 
-  /// Insert or update attendance record (prevent duplicates)
-  Future<int> recordAttendance(AttendanceRecord record) async {
+  /// Insert attendance record
+  Future<int> insertAttendance(model.AttendanceRecord attendance) async {
     final db = await database;
-    return await db.insert(
-      attendanceTable,
-      record.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.ignore,
+    return await db.insertAttendance(
+      AttendanceCompanion(
+        studentId: Value(attendance.studentId),
+        date: Value(attendance.date),
+        time: Value(attendance.time),
+        status: Value(attendance.status.name),
+        recordedAt: Value(attendance.recordedAt),
+      ),
     );
   }
 
-  /// Get attendance for a student on a specific date
-  Future<AttendanceRecord?> getAttendanceForStudentOnDate(int studentId, DateTime date) async {
+  /// Get attendance for student
+  Future<List<model.AttendanceRecord>> getAttendanceForStudent(
+    int studentId,
+  ) async {
     final db = await database;
-    final dateStr = date.toIso8601String().split('T')[0];
-    final maps = await db.query(
-      attendanceTable,
-      where: 'student_id = ? AND date = ?',
-      whereArgs: [studentId, dateStr],
-    );
-    return maps.isNotEmpty ? AttendanceRecord.fromMap(maps[0]) : null;
+    final records = await db.getAttendanceForStudent(studentId);
+    return records
+        .map(
+          (a) => model.AttendanceRecord(
+            id: a.id,
+            studentId: a.studentId,
+            date: a.date,
+            time: a.time,
+            status: model.AttendanceStatus.values.firstWhere(
+              (e) => e.name == a.status,
+              orElse: () => model.AttendanceStatus.present,
+            ),
+            recordedAt: a.recordedAt,
+          ),
+        )
+        .toList();
   }
 
-  /// Get all attendance records for a student
-  Future<List<AttendanceRecord>> getAttendanceForStudent(int studentId) async {
+  /// Get attendance for date
+  Future<List<model.AttendanceRecord>> getAttendanceForDate(
+    DateTime date,
+  ) async {
     final db = await database;
-    final maps = await db.query(
-      attendanceTable,
-      where: 'student_id = ?',
-      whereArgs: [studentId],
-      orderBy: 'date DESC',
-    );
-    return List.generate(maps.length, (i) => AttendanceRecord.fromMap(maps[i]));
+    final records = await db.getAttendanceForDate(date);
+    return records
+        .map(
+          (a) => model.AttendanceRecord(
+            id: a.id,
+            studentId: a.studentId,
+            date: a.date,
+            time: a.time,
+            status: model.AttendanceStatus.values.firstWhere(
+              (e) => e.name == a.status,
+              orElse: () => model.AttendanceStatus.present,
+            ),
+            recordedAt: a.recordedAt,
+          ),
+        )
+        .toList();
   }
 
-  /// Get attendance records for a specific date
-  Future<List<AttendanceRecord>> getAttendanceForDate(DateTime date) async {
+  /// Get attendance for student on specific date
+  Future<model.AttendanceRecord?> getAttendanceForStudentOnDate(
+    int studentId,
+    DateTime date,
+  ) async {
     final db = await database;
-    final dateStr = date.toIso8601String().split('T')[0];
-    final maps = await db.query(
-      attendanceTable,
-      where: 'date = ?',
-      whereArgs: [dateStr],
-      orderBy: 'time ASC',
-    );
-    return List.generate(maps.length, (i) => AttendanceRecord.fromMap(maps[i]));
+    final record = await db.getAttendanceForStudentOnDate(studentId, date);
+    return record != null
+        ? model.AttendanceRecord(
+            id: record.id,
+            studentId: record.studentId,
+            date: record.date,
+            time: record.time,
+            status: model.AttendanceStatus.values.firstWhere(
+              (e) => e.name == record.status,
+              orElse: () => model.AttendanceStatus.present,
+            ),
+            recordedAt: record.recordedAt,
+          )
+        : null;
+  }
+
+  /// Record attendance (convenience method)
+  Future<int> recordAttendance(model.AttendanceRecord attendance) async {
+    return await insertAttendance(attendance);
   }
 
   /// Get attendance statistics for a student
   Future<Map<String, dynamic>> getAttendanceStats(int studentId) async {
     final records = await getAttendanceForStudent(studentId);
-    final presentCount = records.where((r) => r.status == AttendanceStatus.present).length;
-    final absentCount = records.where((r) => r.status == AttendanceStatus.absent).length;
-    final lateCount = records.where((r) => r.status == AttendanceStatus.late).length;
-    final totalClasses = records.length;
-    final percentage = totalClasses > 0 ? (presentCount / totalClasses * 100).toStringAsFixed(1) : '0.0';
+    final total = records.length;
+    final present = records
+        .where((r) => r.status == model.AttendanceStatus.present)
+        .length;
+    final absent = records
+        .where((r) => r.status == model.AttendanceStatus.absent)
+        .length;
+    final late = records
+        .where((r) => r.status == model.AttendanceStatus.late)
+        .length;
 
     return {
-      'total_classes': totalClasses,
-      'present': presentCount,
-      'absent': absentCount,
-      'late': lateCount,
-      'attendance_percentage': double.parse(percentage),
+      'total': total,
+      'present': present,
+      'absent': absent,
+      'late': late,
+      'attendance_rate': total > 0 ? present / total : 0.0,
     };
   }
 
-  /// Delete all data (reset database)
-  Future<void> resetDatabase() async {
+  /// Get all attendance records (for export)
+  Future<List<model.AttendanceRecord>> getAllAttendance() async {
     final db = await database;
-    await db.delete(attendanceTable);
-    await db.delete(embeddingsTable);
-    await db.delete(studentsTable);
+    final records = await db.select(db.attendance).get();
+    return records
+        .map(
+          (a) => model.AttendanceRecord(
+            id: a.id,
+            studentId: a.studentId,
+            date: a.date,
+            time: a.time,
+            status: model.AttendanceStatus.values.firstWhere(
+              (e) => e.name == a.status,
+              orElse: () => model.AttendanceStatus.present,
+            ),
+            recordedAt: a.recordedAt,
+          ),
+        )
+        .toList();
   }
 
-  /// Close database
-  Future<void> close() async {
-    if (_database != null) {
-      await _database!.close();
-      _database = null;
-    }
+  /// Delete all embeddings for a student
+  Future<int> deleteEmbeddingsForStudent(int studentId) async {
+    final db = await database;
+    return await (db.delete(
+      db.faceEmbeddings,
+    )..where((e) => e.studentId.equals(studentId))).go();
   }
 }

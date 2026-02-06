@@ -17,10 +17,7 @@ class FaceMatchingModule {
     double similarityThreshold = defaultSimilarityThreshold,
   }) {
     if (databaseEmbeddings.isEmpty) {
-      return MatchResult(
-        identityType: 'unknown',
-        similarity: 0,
-      );
+      return MatchResult(identityType: 'unknown', similarity: 0);
     }
 
     // Calculate cosine similarity with all database embeddings
@@ -28,7 +25,10 @@ class FaceMatchingModule {
     FaceEmbedding? bestMatch;
 
     for (final dbEmbedding in databaseEmbeddings) {
-      final similarity = cosineSimilarity(incomingEmbedding, dbEmbedding.vector);
+      final similarity = cosineSimilarity(
+        incomingEmbedding,
+        dbEmbedding.vector,
+      );
       if (similarity > bestSimilarity) {
         bestSimilarity = similarity;
         bestMatch = dbEmbedding;
@@ -44,10 +44,7 @@ class FaceMatchingModule {
       );
     }
 
-    return MatchResult(
-      identityType: 'unknown',
-      similarity: bestSimilarity,
-    );
+    return MatchResult(identityType: 'unknown', similarity: bestSimilarity);
   }
 
   /// Calculate cosine similarity between two vectors
@@ -95,12 +92,7 @@ class FaceMatchingModule {
     double similarityThreshold = defaultSimilarityThreshold,
   }) {
     if (databaseEmbeddings.isEmpty) {
-      return [
-        MatchResult(
-          identityType: 'unknown',
-          similarity: 0,
-        ),
-      ];
+      return [MatchResult(identityType: 'unknown', similarity: 0)];
     }
 
     // Calculate similarity for all embeddings
@@ -117,12 +109,13 @@ class FaceMatchingModule {
         .take(k)
         .where((entry) => entry.value >= similarityThreshold)
         .map((entry) {
-      return MatchResult(
-        identityType: 'known',
-        studentId: entry.key.studentId,
-        similarity: entry.value,
-      );
-    }).toList();
+          return MatchResult(
+            identityType: 'known',
+            studentId: entry.key.studentId,
+            similarity: entry.value,
+          );
+        })
+        .toList();
 
     return topMatches.isNotEmpty
         ? topMatches

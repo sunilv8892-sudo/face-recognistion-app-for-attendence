@@ -22,7 +22,12 @@ class AttendanceRecord {
       'id': id,
       'student_id': studentId,
       'date': date.toIso8601String().split('T')[0], // YYYY-MM-DD
-      'time': time ?? DateTime.now().toIso8601String().split('T')[1].split('.')[0], // HH:MM:SS
+      'time':
+          time ??
+          DateTime.now()
+              .toIso8601String()
+              .split('T')[1]
+              .split('.')[0], // HH:MM:SS
       'status': status.name,
       'recorded_at': recordedAt.toIso8601String(),
     };
@@ -44,7 +49,8 @@ class AttendanceRecord {
   }
 
   @override
-  String toString() => 'AttendanceRecord(studentId: $studentId, date: $date, status: ${status.name})';
+  String toString() =>
+      'AttendanceRecord(studentId: $studentId, date: $date, status: ${status.name})';
 }
 
 /// Attendance status enumeration

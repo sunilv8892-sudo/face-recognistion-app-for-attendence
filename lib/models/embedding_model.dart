@@ -38,5 +38,6 @@ class FaceEmbedding {
   }
 
   @override
-  String toString() => 'FaceEmbedding(id: $id, studentId: $studentId, dim: ${vector.length})';
+  String toString() =>
+      'FaceEmbedding(id: $id, studentId: $studentId, dim: ${vector.length})';
 }

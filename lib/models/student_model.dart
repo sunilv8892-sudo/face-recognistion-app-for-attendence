@@ -37,5 +37,6 @@ class Student {
   }
 
   @override
-  String toString() => 'Student(id: $id, name: $name, rollNumber: $rollNumber, class: $className)';
+  String toString() =>
+      'Student(id: $id, name: $name, rollNumber: $rollNumber, class: $className)';
 }
